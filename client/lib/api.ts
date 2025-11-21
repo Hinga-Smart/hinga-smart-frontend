@@ -1,151 +1,120 @@
-/**
- * API utility functions for communicating with the Flask backend
- * All routes are proxied through Express server at /api/*
- */
+// API base URL - use environment variable or default to deployed backend
+const API_BASE_URL =
+  import.meta.env.VITE_API_URL || "https://hinga-smart-server.vercel.app";
 
-const API_BASE_URL = ""; // Empty string means use relative URLs (works with Express proxy)
+// Helper function to make API requests
+async function apiRequest<T>(
+  endpoint: string,
+  options?: RequestInit
+): Promise<T> {
+  const url = endpoint.startsWith("http")
+    ? endpoint
+    : `${API_BASE_URL}${endpoint}`;
 
-/**
- * Get all sensors
- */
-export async function getSensors() {
   try {
-    const response = await fetch(`${API_BASE_URL}/api/sensors`);
+    const response = await fetch(url, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+      },
+    });
+
     if (!response.ok) {
-      // If error, try to parse error message
+      let errorMessage = `API error: ${response.status}`;
       try {
         const errorData = await response.json();
-        throw new Error(errorData.error || `Failed to fetch sensors: ${response.status}`);
+        errorMessage = errorData.status || errorData.error || errorMessage;
       } catch (e) {
-        throw new Error(`Failed to fetch sensors: ${response.status}`);
+        errorMessage = response.statusText || errorMessage;
       }
+      throw new Error(errorMessage);
     }
-    const data = await response.json();
-    // Always return an array
-    return Array.isArray(data) ? data : [];
+
+    return response.json();
   } catch (error) {
-    console.error("Error in getSensors:", error);
-    // Return empty array on error so UI doesn't break
-    return [];
+    // Handle network errors (CORS, connection issues, etc.)
+    if (error instanceof TypeError && error.message.includes("fetch")) {
+      throw new Error(
+        "Failed to connect to server. This is likely a CORS issue. Please ensure your Flask backend has CORS enabled."
+      );
+    }
+    throw error;
   }
 }
 
-/**
- * Add a new sensor
- */
+// Sensor management
+export async function getSensors() {
+  return apiRequest("/sensors");
+}
+
 export async function addSensor(data: {
   sensor_id: number;
   sensor_name: string;
   location?: string;
 }) {
-  const response = await fetch(`${API_BASE_URL}/api/sensor/add`, {
+  return apiRequest("/sensor/add", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
     body: JSON.stringify(data),
   });
-
-  if (!response.ok) {
-    const errorData = await response.json();
-    throw new Error(errorData.status || "Failed to add sensor");
-  }
-
-  return response.json();
 }
 
-/**
- * Update a sensor
- */
 export async function updateSensor(
   sensorId: number,
-  data: {
-    sensor_name?: string;
-    location?: string;
-    active?: boolean;
-  }
+  data: { sensor_name?: string; location?: string }
 ) {
-  const response = await fetch(`${API_BASE_URL}/api/sensor/update/${sensorId}`, {
+  return apiRequest(`/sensor/update/${sensorId}`, {
     method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-    },
     body: JSON.stringify(data),
   });
-
-  if (!response.ok) {
-    const errorData = await response.json();
-    throw new Error(errorData.status || "Failed to update sensor");
-  }
-
-  return response.json();
 }
 
-/**
- * Get latest moisture reading
- */
-export async function getLatestData(sensorId?: number) {
-  const url = sensorId
-    ? `${API_BASE_URL}/api/latest?sensor_id=${sensorId}`
-    : `${API_BASE_URL}/api/latest`;
-
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch latest data: ${response.status}`);
-  }
-  return response.json();
+// Moisture data
+export async function getLatestData(sensorId: number) {
+  return apiRequest(`/latest?sensor_id=${sensorId}`);
 }
 
-/**
- * Get all moisture readings
- */
-export async function getAllData(sensorId?: number) {
-  const url = sensorId
-    ? `${API_BASE_URL}/api/all?sensor_id=${sensorId}`
-    : `${API_BASE_URL}/api/all`;
-
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch all data: ${response.status}`);
-  }
-  return response.json();
+export async function getAllData(sensorId: number) {
+  return apiRequest(`/all?sensor_id=${sensorId}`);
 }
 
-/**
- * Submit moisture data (for IoT devices or manual entry)
- */
-export async function submitSensorData(data: {
+export async function submitData(data: {
   sensor_id: number;
   moisture: number;
+  state?: string;
 }) {
-  const response = await fetch(`${API_BASE_URL}/api/data`, {
+  return apiRequest("/data", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
     body: JSON.stringify(data),
   });
-
-  if (!response.ok) {
-    const errorData = await response.json();
-    throw new Error(errorData.status || "Failed to submit sensor data");
-  }
-
-  return response.json();
 }
 
-/**
- * Download CSV export
- */
-export async function downloadCSV(sensorId?: number): Promise<Blob> {
-  const url = sensorId
-    ? `${API_BASE_URL}/api/download-excel?sensor_id=${sensorId}`
-    : `${API_BASE_URL}/api/download-excel`;
-
+// Download CSV
+export async function downloadCSV(sensorId: number): Promise<Blob> {
+  const url = `${API_BASE_URL}/all?sensor_id=${sensorId}`;
   const response = await fetch(url);
+
   if (!response.ok) {
     throw new Error(`Failed to download CSV: ${response.status}`);
   }
-  return response.blob();
+
+  const data = await response.json() as Array<{
+    sensor_id: number;
+    moisture: number;
+    timestamp: string;
+    state: string;
+  }>;
+
+  // Convert to CSV format
+  const csvHeader = "Timestamp,Sensor ID,Moisture,State\n";
+  const csvRows = data
+    .map((item) => {
+      const date = new Date(item.timestamp).toLocaleString();
+      return `"${date}",${item.sensor_id},${item.moisture},${item.state}`;
+    })
+    .join("\n");
+
+  const csv = csvHeader + csvRows;
+  return new Blob([csv], { type: "text/csv" });
 }
 
